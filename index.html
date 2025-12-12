@@ -128,6 +128,13 @@
           <label>날짜 필터 (일 단위)</label>
           <input type="date" id="lbDate" />
         </div>
+        <div>
+          <label>정렬 기준</label>
+          <select id="lbSort">
+            <option value="date">날짜/시간 순</option>
+            <option value="avg">평균/문항(초) 순</option>
+          </select>
+        </div>
         <button class="btn" id="lbRefreshBtn">새로고침</button>
         <button class="btn" id="lbResetBtn" style="background:#b74b4b;">리더보드 초기화</button>
       </div>
@@ -143,6 +150,11 @@
           </thead>
           <tbody id="lbBody"></tbody>
         </table>
+      </div>
+      <div style="margin-top: 12px; text-align: center;">
+        <button class="btn" id="lbPrevPage" style="margin-right: 8px;">이전</button>
+        <span id="lbPageInfo">페이지 1 / 1</span>
+        <button class="btn" id="lbNextPage" style="margin-left: 8px;">다음</button>
       </div>
     </section>
 
@@ -160,12 +172,27 @@
         </table>
       </div>
     </section>
+
+    <section id="leaderboard-avg">
+      <h2>평균 기록 (자릿수+연산별 평균/문항 평균)</h2>
+      <p class="notice">모든 기록을 기준으로 자릿수+연산 조합별 평균 문제당 시간의 평균을 보여줍니다.</p>
+      <div class="table-wrap">
+        <table class="leaderboard-table">
+          <thead>
+            <tr>
+              <th>자릿수</th><th>연산</th><th>평균/문항(초)</th><th>기록 수</th>
+            </tr>
+          </thead>
+          <tbody id="lbAvgBody"></tbody>
+        </table>
+      </div>
+    </section>
   </main>
 
   <script>
     // 세션 상태
     let settings = { problemCount: 10, digitLength: 1, operations: [] };
-    const MAX_RECORDS = 9999;
+    const MAX_RECORDS = 50000;
     let problems = [];
     let currentIdx = 0;
     let startTime = 0;
@@ -208,6 +235,12 @@
       lbBody: document.getElementById('lbBody'),
       lbBestBody: document.getElementById('lbBestBody'),
       lbBestSection: document.getElementById('leaderboard-best'),
+      lbPageInfo: document.getElementById('lbPageInfo'),
+      lbPrevPage: document.getElementById('lbPrevPage'),
+      lbNextPage: document.getElementById('lbNextPage'),
+      lbSort: document.getElementById('lbSort'),
+      lbAvgSection: document.getElementById('leaderboard-avg'),
+      lbAvgBody: document.getElementById('lbAvgBody'),
     };
 
     function toDateKey(date) {
@@ -366,10 +399,14 @@
       saveRecords(records);
     }
 
+    let currentPage = 1;
+    const RECORDS_PER_PAGE = 20;
+
     function renderLeaderboard() {
       const digit = Number(els.lbDigit.value);
       const op = els.lbOp.value;
       const dateFilter = els.lbDate.value; // yyyy-mm-dd or ''
+      const sortBy = els.lbSort.value; // 'date' or 'avg'
       const allRecords = loadRecords();
       els.lbStats.textContent = `저장: ${allRecords.length} / ${MAX_RECORDS}`;
       const records = allRecords.filter(r => {
@@ -378,13 +415,18 @@
         const recDate = new Date(r.date);
         return toDateKey(recDate) === dateFilter;
       });
-      // 평균 문제당 시간 기준 정렬 (기록에 avgMs 없으면 총 시간/문항수 또는 총 시간으로 대체)
+      // 정렬 기준에 따라 정렬
       const getAvg = (r) => {
         if (typeof r.avgMs === 'number') return r.avgMs;
         if (r.problemCount) return r.durationMs / r.problemCount;
         return r.durationMs;
       };
-      const sorted = records.sort((a, b) => getAvg(a) - getAvg(b));
+      let sorted;
+      if (sortBy === 'avg') {
+        sorted = records.sort((a, b) => getAvg(a) - getAvg(b));
+      } else {
+        sorted = records.sort((a, b) => new Date(b.date) - new Date(a.date)); // 최신순
+      }
       els.lbBody.innerHTML = '';
       if (sorted.length === 0) {
         const tr = document.createElement('tr');
@@ -394,12 +436,29 @@
         tr.appendChild(td);
         els.lbBody.appendChild(tr);
         els.lbBest.textContent = '현재 필터에 해당하는 기록이 없습니다.';
+        els.lbPageInfo.textContent = '페이지 1 / 1';
+        els.lbPrevPage.disabled = true;
+        els.lbNextPage.disabled = true;
         return;
       }
+      // 최고 기록 표시
       const bestAvg = getAvg(sorted[0]);
       const best = sorted[0];
       els.lbBest.textContent = `최고 기록: ${best.digit}자리 ${best.ops[0]} | 문항 ${best.problemCount ?? '-'}개 | 총 ${formatMs(best.durationMs)} | 평균 ${(bestAvg/1000).toFixed(3)}초 | 날짜 ${new Date(best.date).toLocaleString()}`;
-      sorted.slice(0, 20).forEach(rec => {
+      
+      // 페이지네이션
+      const totalPages = Math.ceil(sorted.length / RECORDS_PER_PAGE);
+      if (currentPage > totalPages) currentPage = totalPages;
+      if (currentPage < 1) currentPage = 1;
+      els.lbPageInfo.textContent = `페이지 ${currentPage} / ${totalPages}`;
+      els.lbPrevPage.disabled = currentPage <= 1;
+      els.lbNextPage.disabled = currentPage >= totalPages;
+      
+      const startIdx = (currentPage - 1) * RECORDS_PER_PAGE;
+      const endIdx = startIdx + RECORDS_PER_PAGE;
+      const pageRecords = sorted.slice(startIdx, endIdx);
+      
+      pageRecords.forEach(rec => {
         const avgMs = getAvg(rec);
         const tr = document.createElement('tr');
 
@@ -492,18 +551,48 @@
       showHome(false);
     });
     els.lbRefreshBtn.addEventListener('click', () => {
+      currentPage = 1;
       renderLeaderboard();
       renderLeaderboardBestOverall();
+      renderLeaderboardAvg();
     });
     els.lbResetBtn.addEventListener('click', () => {
       resetLeaderboard();
       renderLeaderboardBestOverall();
+      renderLeaderboardAvg();
+    });
+    els.lbPrevPage.addEventListener('click', () => {
+      if (currentPage > 1) {
+        currentPage--;
+        renderLeaderboard();
+      }
+    });
+    els.lbNextPage.addEventListener('click', () => {
+      currentPage++;
+      renderLeaderboard();
+    });
+    els.lbSort.addEventListener('change', () => {
+      currentPage = 1;
+      renderLeaderboard();
+    });
+    els.lbDigit.addEventListener('change', () => {
+      currentPage = 1;
+      renderLeaderboard();
+    });
+    els.lbOp.addEventListener('change', () => {
+      currentPage = 1;
+      renderLeaderboard();
+    });
+    els.lbDate.addEventListener('change', () => {
+      currentPage = 1;
+      renderLeaderboard();
     });
 
     function showSessionOnly() {
       els.setup.style.display = 'none';
       els.leaderboard.style.display = 'none';
       els.lbBestSection.style.display = 'none';
+      els.lbAvgSection.style.display = 'none';
       els.result.style.display = 'none';
       els.session.style.display = 'block';
       document.body.classList.add('session-mode');
@@ -514,6 +603,7 @@
       els.setup.style.display = 'none';
       els.leaderboard.style.display = 'none';
       els.lbBestSection.style.display = 'none';
+      els.lbAvgSection.style.display = 'none';
       els.result.style.display = 'block';
       document.body.classList.remove('session-mode');
     }
@@ -523,9 +613,14 @@
       els.setup.style.display = 'block';
       els.leaderboard.style.display = 'block';
       els.lbBestSection.style.display = 'block';
+      els.lbAvgSection.style.display = 'block';
       els.result.style.display = withResult ? 'block' : 'none';
       document.body.classList.remove('session-mode');
-      if (withResult) renderLeaderboard();
+      if (withResult) {
+        renderLeaderboard();
+        renderLeaderboardBestOverall();
+        renderLeaderboardAvg();
+      }
     }
 
     // PWA: 서비스 워커 등록
@@ -535,9 +630,65 @@
       });
     }
 
+    function renderLeaderboardAvg() {
+      const allRecords = loadRecords();
+      const grouped = new Map(); // key: digit-op, val: { sum: total avgMs, count: number }
+      const getAvg = (r) => {
+        if (typeof r.avgMs === 'number') return r.avgMs;
+        if (r.problemCount) return r.durationMs / r.problemCount;
+        return r.durationMs;
+      };
+      allRecords.forEach(r => {
+        if (!(r.ops && r.ops.length === 1)) return;
+        const key = `${r.digit}-${r.ops[0]}`;
+        const avg = getAvg(r);
+        const current = grouped.get(key);
+        if (!current) {
+          grouped.set(key, { sum: avg, count: 1, digit: r.digit, op: r.ops[0] });
+        } else {
+          current.sum += avg;
+          current.count += 1;
+        }
+      });
+      const avgList = Array.from(grouped.values()).map(item => ({
+        digit: item.digit,
+        op: item.op,
+        avgMs: item.sum / item.count,
+        count: item.count
+      })).sort((a, b) => {
+        if (a.digit !== b.digit) return a.digit - b.digit;
+        return a.op.localeCompare(b.op);
+      });
+      els.lbAvgBody.innerHTML = '';
+      if (avgList.length === 0) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 4;
+        td.textContent = '기록이 없습니다.';
+        tr.appendChild(td);
+        els.lbAvgBody.appendChild(tr);
+        return;
+      }
+      avgList.forEach(item => {
+        const tr = document.createElement('tr');
+        [
+          `${item.digit}자리`,
+          `${item.op}`,
+          `${(item.avgMs / 1000).toFixed(3)} 초`,
+          `${item.count}개`
+        ].forEach(text => {
+          const td = document.createElement('td');
+          td.textContent = text;
+          tr.appendChild(td);
+        });
+        els.lbAvgBody.appendChild(tr);
+      });
+    }
+
     // 초기 상태
     renderLeaderboard();
     renderLeaderboardBestOverall();
+    renderLeaderboardAvg();
   </script>
 </body>
 </html>
